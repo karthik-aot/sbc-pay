@@ -49,6 +49,7 @@ class FeeSchedule:  # pylint: disable=too-many-public-methods, too-many-instance
         self._quantity: int = 1
         self._service_fees: float = 0
         self._service_fee_code: str = None
+        self._variable: bool = False
 
     @property
     def _dao(self):
@@ -68,6 +69,7 @@ class FeeSchedule:  # pylint: disable=too-many-public-methods, too-many-instance
         self._fee_amount: float = self._dao.fee.amount
         self._filing_type: str = self._dao.filing_type.description
         self._service_fee_code: str = self._dao.service_fee_code
+        self._variable: bool = self._dao.variable
 
     @property
     def fee_schedule_id(self):
@@ -243,6 +245,11 @@ class FeeSchedule:  # pylint: disable=too-many-public-methods, too-many-instance
         self._service_fee_code = value
         self._dao.service_fee_code = value
 
+    @property
+    def variable(self) -> bool:
+        """Return the service_fee_code."""
+        return self._variable
+
     @ServiceTracing.disable_tracing
     def asdict(self):
         """Return the User as a python dict."""
@@ -331,7 +338,7 @@ class FeeSchedule:  # pylint: disable=too-many-public-methods, too-many-instance
         }
         fee_schdules = FeeScheduleModel.find_all(corp_type_code=corp_type, filing_type_code=filing_type_code,
                                                  description=description)
-        schdule_schema = FeeScheduleSchema()
+        schdule_schema = FeeScheduleSchema(exclude=('distribution_codes',))
         data['items'] = schdule_schema.dump(fee_schdules, many=True)
         current_app.logger.debug('>find_all')
         return data

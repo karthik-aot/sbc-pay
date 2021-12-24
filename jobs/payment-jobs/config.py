@@ -122,6 +122,7 @@ class _Config(object):  # pylint: disable=too-few-public-methods
     CFS_ACCOUNT_DESCRIPTION = os.getenv('CFS_ACCOUNT_DESCRIPTION', 'BCR')
     CFS_INVOICE_PREFIX = os.getenv('CFS_INVOICE_PREFIX', 'REG')
     CFS_STOP_PAD_ACCOUNT_CREATION = os.getenv('CFS_STOP_PAD_ACCOUNT_CREATION', 'false').lower() == 'true'
+    CFS_PARTY_PREFIX = os.getenv('CFS_PARTY_PREFIX', 'BCR-')
 
     CFS_INVOICE_CUT_OFF_HOURS_UTC = int(os.getenv('CFS_INVOICE_CUT_OFF_HOURS_UTC', '2'))
     CFS_INVOICE_CUT_OFF_MINUTES_UTC = int(os.getenv('CFS_INVOICE_CUT_OFF_MINUTES_UTC', '0'))
@@ -179,6 +180,15 @@ class _Config(object):  # pylint: disable=too-few-public-methods
 
     # disbursement delay
     DISBURSEMENT_DELAY_IN_DAYS = int(os.getenv('DISBURSEMENT_DELAY', 5))
+
+    # Is FAS-CFS integration disabled
+    DISABLE_CFS_FAS_INTEGRATION = os.getenv('DISABLE_CFS_FAS_INTEGRATION', 'false').lower() == 'true'
+
+    # CP Job variables
+    CGI_AP_DISTRIBUTION = os.getenv('CGI_AP_DISTRIBUTION', '')
+    CGI_AP_SUPPLIER_NUMBER = os.getenv('CGI_AP_SUPPLIER_NUMBER', '')
+    CGI_AP_SUPPLIER_LOCATION = os.getenv('CGI_AP_SUPPLIER_LOCATION', '')
+    CGI_AP_DISTRIBUTION_VENDOR_NUMBER = os.getenv('CGI_AP_DISTRIBUTION_VENDOR_NUMBER', '')
 
 
 class DevConfig(_Config):  # pylint: disable=too-few-public-methods

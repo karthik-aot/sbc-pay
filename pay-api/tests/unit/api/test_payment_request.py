@@ -26,6 +26,7 @@ from flask import current_app
 from requests.exceptions import ConnectionError
 
 from pay_api.models import DistributionCode as DistributionCodeModel
+from pay_api.models import FeeSchedule as FeeScheduleModel
 from pay_api.models import PaymentAccount as PaymentAccountModel
 from pay_api.schemas import utils as schema_utils
 from pay_api.utils.enums import InvoiceStatus, PatchActions, PaymentMethod, Role, RoutingSlipStatus
@@ -33,8 +34,8 @@ from tests.utilities.base_test import (
     activate_pad_account, fake, get_basic_account_payload, get_claims, get_gov_account_payload, get_payment_request,
     get_payment_request_for_wills, get_payment_request_with_folio_number, get_payment_request_with_no_contact_info,
     get_payment_request_with_payment_method, get_payment_request_with_service_fees, get_payment_request_without_bn,
-    get_routing_slip_request, get_unlinked_pad_account_payload, get_waive_fees_payment_request,
-    get_zero_dollar_payment_request, token_header)
+    get_premium_account_payload, get_routing_slip_request, get_unlinked_pad_account_payload,
+    get_waive_fees_payment_request, get_zero_dollar_payment_request, token_header)
 
 
 def test_payment_request_creation(session, client, jwt, app):
@@ -69,27 +70,22 @@ def test_payment_creation_using_direct_pay(session, client, jwt, app):
     assert rv.json.get('isPaymentActionRequired')
 
 
-def test_payment_creation_with_service_account(session, client, jwt, app):
+@pytest.mark.parametrize('payload, product_code_claim, expected_status', [
+    (get_payment_request_with_service_fees(corp_type='BEN'), 'BUSINESS', 201),  # Business SA creating business invoice
+    (get_payment_request_with_service_fees(corp_type='BEN'), 'CSO', 403),  # Business SA creating CSO invoice
+    (get_payment_request_with_service_fees(corp_type='CSO', filing_type='CSCRMTFC'), 'CSO', 201)  # CSO SA and CSA inv
+])
+def test_payment_creation_with_service_account(session, client, jwt, app, payload, product_code_claim, expected_status):
     """Assert that the endpoint returns 201."""
-    token = jwt.create_jwt(get_claims(roles=[Role.SYSTEM.value, Role.EDITOR.value]), token_header)
+    token = jwt.create_jwt(
+        get_claims(roles=[Role.SYSTEM.value, Role.EDITOR.value], product_code=product_code_claim),
+        token_header
+    )
     headers = {'Authorization': f'Bearer {token}', 'content-type': 'application/json'}
 
-    rv = client.post('/api/v1/payment-requests', data=json.dumps(get_payment_request_with_payment_method()),
+    rv = client.post('/api/v1/payment-requests', data=json.dumps(payload),
                      headers=headers)
-    assert rv.status_code == 201
-    assert rv.json.get('_links') is not None
-
-    assert schema_utils.validate(rv.json, 'invoice')[0]
-
-
-def test_payment_creation_service_account_with_no_edit_role(session, client, jwt, app):
-    """Assert that the endpoint returns 403."""
-    token = jwt.create_jwt(get_claims(role=Role.SYSTEM.value), token_header)
-    headers = {'Authorization': f'Bearer {token}', 'content-type': 'application/json'}
-
-    rv = client.post('/api/v1/payment-requests', data=json.dumps(get_payment_request()),
-                     headers=headers)
-    assert rv.status_code == 403
+    assert rv.status_code == expected_status
 
 
 def test_payment_creation_for_unauthorized_user(session, client, jwt, app):
@@ -1001,3 +997,49 @@ def test_create_ejv_payment_request_non_billable_account(session, client, jwt, a
     assert rv.json.get('paymentMethod') == PaymentMethod.EJV.value
     assert rv.json.get('statusCode') == 'COMPLETED'
     assert rv.json.get('total') == rv.json.get('paid')
+
+
+@pytest.mark.parametrize('account_payload, pay_method', [
+    (get_unlinked_pad_account_payload(account_id=1234), PaymentMethod.PAD.value),
+    (get_premium_account_payload(account_id=1234), PaymentMethod.DRAWDOWN.value)])
+def test_create_sandbox_payment_requests(session, client, jwt, app, account_payload, pay_method):
+    """Assert payment request works for PAD accounts."""
+    token = jwt.create_jwt(get_claims(roles=[Role.SYSTEM.value, Role.CREATE_SANDBOX_ACCOUNT.value]), token_header)
+    headers = {'Authorization': f'Bearer {token}', 'content-type': 'application/json'}
+    # Create account first
+    rv = client.post('/api/v1/accounts?sandbox=true', data=json.dumps(account_payload), headers=headers)
+
+    auth_account_id = rv.json.get('accountId')
+
+    token = jwt.create_jwt(get_claims(roles=[Role.SANDBOX.value]), token_header)
+    headers = {'Authorization': f'Bearer {token}', 'content-type': 'application/json', 'Account-Id': auth_account_id}
+
+    payload = get_payment_request()
+    rv = client.post('/api/v1/payment-requests', data=json.dumps(payload), headers=headers)
+
+    assert rv.json.get('paymentMethod') == pay_method
+    assert rv.json.get('statusCode') == 'COMPLETED'
+
+
+def test_payment_request_creation_using_variable_fee(session, client, jwt, app):
+    """Assert that the endpoint returns 201."""
+    token = jwt.create_jwt(get_claims(), token_header)
+    headers = {'Authorization': f'Bearer {token}', 'content-type': 'application/json'}
+    req_data = copy.deepcopy(get_payment_request())
+    req_data['filingInfo']['filingTypes'][0]['fee'] = 100  # This shouldn't be in effect as the fee is not variable.
+
+    rv = client.post('/api/v1/payment-requests', data=json.dumps(req_data), headers=headers)
+    assert rv.status_code == 201
+    assert rv.json.get('total') == 50
+
+    # Now change the fee to variable and try again.
+    fee_schedule: FeeScheduleModel = FeeScheduleModel.find_by_filing_type_and_corp_type(
+        req_data['businessInfo']['corpType'], req_data['filingInfo']['filingTypes'][0]['filingTypeCode'])
+    fee_schedule.variable = True
+    fee_schedule.save()
+
+    req_data['filingInfo']['filingTypes'][0]['fee'] = 100  # This should be in effect now.
+
+    rv = client.post('/api/v1/payment-requests', data=json.dumps(req_data), headers=headers)
+    assert rv.status_code == 201
+    assert rv.json.get('total') == 130

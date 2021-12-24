@@ -114,6 +114,7 @@ class Role(Enum):
     VIEWER = 'view'
     EDITOR = 'edit'
     SYSTEM = 'system'
+    CREATE_SANDBOX_ACCOUNT = 'create_sandbox_account'
     MANAGE_GL_CODES = 'manage_gl_codes'
     PUBLIC_USER = 'public_user'
     EXCLUDE_SERVICE_FEES = 'exclude_service_fees'
@@ -128,6 +129,7 @@ class Role(Enum):
     FAS_CREATE = 'fas_create'
     FAS_LINK = 'fas_link'
     FAS_REFUND_APPROVER = 'fas_refund_approver'
+    SANDBOX = 'sandbox'
 
 
 class Code(Enum):
@@ -209,15 +211,25 @@ class RoutingSlipStatus(Enum):
 
     ACTIVE = 'ACTIVE'
     COMPLETE = 'COMPLETE'
-    BOUNCED = 'BOUNCED'
     NSF = 'NSF'
-    REFUND = 'REFUND'
     LAST = 'LAST'
     LINKED = 'LINKED'
     REFUND_REQUESTED = 'REFUND_REQUESTED'
     REFUND_AUTHORIZED = 'REFUND_AUTHORIZED'
+    REFUND_UPLOADED = 'REFUND_UPLOADED'
     REFUND_REJECTED = 'REFUND_REJECTED'
     REFUND_COMPLETED = 'REFUND_COMPLETED'
+    WRITE_OFF_REQUESTED = 'WRITE_OFF_REQUESTED'
+    WRITE_OFF_AUTHORIZED = 'WRITE_OFF_AUTHORIZED'
+    WRITE_OFF_COMPLETED = 'WRITE_OFF_COMPLETED'
+
+
+class EjvFileType(Enum):
+    """File types."""
+
+    PAYMENT = 'PAYMENT'
+    DISBURSEMENT = 'DISBURSEMENT'
+    REFUND = 'REFUND'
 
 
 class PatchActions(Enum):

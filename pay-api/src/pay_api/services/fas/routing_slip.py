@@ -26,7 +26,6 @@ from pay_api.models import Payment as PaymentModel
 from pay_api.models import PaymentAccount as PaymentAccountModel
 from pay_api.models import RoutingSlip as RoutingSlipModel
 from pay_api.models import RoutingSlipSchema
-from pay_api.services.cfs_service import CFSService
 from pay_api.services.oauth_service import OAuthService
 from pay_api.utils.enums import (
     AuthHeaderType, CfsAccountStatus, ContentType, PatchActions, PaymentMethod, PaymentStatus, PaymentSystem,
@@ -269,32 +268,17 @@ class RoutingSlip:  # pylint: disable=too-many-instance-attributes, too-many-pub
         if len(set(payment_methods)) != 1:
             raise BusinessException(Error.FAS_INVALID_PAYMENT_METHOD)
 
-        cfs_account_details: Dict[str, any] = CFSService.create_cfs_account(
-            name=rs_number,  # TODO Sending RS number as name of party
-            contact_info={}
-        )
         pay_account: PaymentAccountModel = PaymentAccountModel(
             name=request_json.get('paymentAccount').get('accountName'),
             payment_method=payment_methods[0],
         ).flush()
 
-        cfs_account: CfsAccountModel = CfsAccountModel(
+        CfsAccountModel(
             account_id=pay_account.id,
-            cfs_account=cfs_account_details.get('account_number'),
-            cfs_party=cfs_account_details.get('party_number'),
-            cfs_site=cfs_account_details.get('site_number'),
-            status=CfsAccountStatus.ACTIVE.value
+            status=CfsAccountStatus.PENDING.value
         ).flush()
 
         total = sum(float(payment.get('paidAmount')) for payment in request_json.get('payments'))
-
-        # Create receipt in CFS for the payment.
-        # TODO Create a receipt for the total or for one each ?
-        CFSService.create_cfs_receipt(cfs_account=cfs_account,
-                                      rcpt_number=rs_number,
-                                      rcpt_date=request_json.get('routingSlipDate'),
-                                      amount=total,
-                                      payment_method=payment_methods[0])
 
         # Create a routing slip record.
         routing_slip: RoutingSlipModel = RoutingSlipModel(
@@ -356,7 +340,14 @@ class RoutingSlip:  # pylint: disable=too-many-instance-attributes, too-many-pub
             raise BusinessException(Error.FAS_INVALID_ROUTING_SLIP_NUMBER)
 
         if patch_action == PatchActions.UPDATE_STATUS:
-            routing_slip.status = request_json.get('status')
+            # Update the remaining amount as negative total of sum of all totals for that routing slip.
+            if (status := request_json.get('status')) == RoutingSlipStatus.NSF.value:
+                total_paid_to_reverse: float = 0
+                for rs in (routing_slip, *RoutingSlipModel.find_children(routing_slip.number)):
+                    total_paid_to_reverse += rs.total
+                routing_slip.remaining_amount = -total_paid_to_reverse
+
+            routing_slip.status = status
 
         routing_slip.save()
         return cls.find_by_number(rs_number)

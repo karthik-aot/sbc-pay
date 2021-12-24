@@ -21,9 +21,10 @@ from datetime import datetime, timedelta
 
 from pay_api.models import (
     CfsAccount, DistributionCode, DistributionCodeLink, Invoice, InvoiceReference, Payment, PaymentAccount,
-    PaymentLineItem, Receipt, StatementSettings)
+    PaymentLineItem, Receipt, Refund, RoutingSlip, StatementSettings)
 from pay_api.utils.enums import (
-    CfsAccountStatus, InvoiceReferenceStatus, InvoiceStatus, LineItemStatus, PaymentMethod, PaymentStatus)
+    CfsAccountStatus, InvoiceReferenceStatus, InvoiceStatus, LineItemStatus, PaymentMethod, PaymentStatus,
+    PaymentSystem, RoutingSlipStatus)
 
 
 def factory_premium_payment_account(bcol_user_id='PB25020', bcol_account_id='1234567890', auth_account_id='1234'):
@@ -68,7 +69,8 @@ def factory_invoice(payment_account: PaymentAccount, status_code: str = InvoiceS
                     service_fees: float = 0.0, total=0,
                     payment_method_code: str = PaymentMethod.DIRECT_PAY.value,
                     created_on: datetime = datetime.now(),
-                    cfs_account_id: int = 0
+                    cfs_account_id: int = 0,
+                    routing_slip=None
                     ):
     """Return Factory."""
     status_code = InvoiceStatus.APPROVED.value if payment_method_code == PaymentMethod.PAD.value else status_code
@@ -83,7 +85,9 @@ def factory_invoice(payment_account: PaymentAccount, status_code: str = InvoiceS
         folio_number='1234567890',
         service_fees=service_fees,
         bcol_account=payment_account.bcol_account,
-        payment_method_code=payment_method_code or payment_account.payment_method
+        payment_method_code=payment_method_code or payment_account.payment_method,
+        routing_slip=routing_slip
+
     )
     if cfs_account_id != 0:
         invoice.cfs_account_id = cfs_account_id
@@ -109,10 +113,11 @@ def factory_payment_line_item(invoice_id: str, fee_schedule_id: int, filing_fees
     ).save()
 
 
-def factory_invoice_reference(invoice_id: int, invoice_number: str = '10021'):
+def factory_invoice_reference(invoice_id: int, invoice_number: str = '10021',
+                              status_code=InvoiceReferenceStatus.ACTIVE.value):
     """Return Factory."""
     return InvoiceReference(invoice_id=invoice_id,
-                            status_code=InvoiceReferenceStatus.ACTIVE.value,
+                            status_code=status_code,
                             invoice_number=invoice_number).save()
 
 
@@ -138,6 +143,48 @@ def factory_create_pad_account(auth_account_id='1234', bank_number='001', bank_b
     CfsAccount(status=status, account_id=account.id, bank_number=bank_number,
                bank_branch_number=bank_branch, bank_account_number=bank_account).save()
     return account
+
+
+def factory_routing_slip_account(
+        number: str = '1234',
+        status: str = CfsAccountStatus.PENDING.value,
+        total: int = 0,
+        remaining_amount: int = 0,
+        routing_slip_date=datetime.now(),
+        payment_method=PaymentMethod.CASH.value,
+        auth_account_id='1234',
+        routing_slip_status=RoutingSlipStatus.ACTIVE.value,
+        refund_amount=0
+):
+    """Create routing slip and return payment account with it."""
+    payment_account = PaymentAccount(
+        payment_method=payment_method,
+        name=f'Test {auth_account_id}')
+    payment_account.save()
+
+    rs = RoutingSlip(
+        number=number,
+        payment_account_id=payment_account.id,
+        status=routing_slip_status,
+        total=total,
+        remaining_amount=remaining_amount,
+        created_by='test',
+        routing_slip_date=routing_slip_date,
+        refund_amount=refund_amount
+    ).save()
+
+    Payment(payment_system_code=PaymentSystem.FAS.value,
+            payment_account_id=payment_account.id,
+            payment_method_code=PaymentMethod.CASH.value,
+            payment_status_code=PaymentStatus.COMPLETED.value,
+            receipt_number=number,
+            is_routing_slip=True,
+            paid_amount=rs.total,
+            created_by='TEST')
+
+    CfsAccount(status=status, account_id=payment_account.id).save()
+
+    return payment_account
 
 
 def factory_create_eft_account(auth_account_id='1234', status=CfsAccountStatus.PENDING.value):
@@ -215,3 +262,17 @@ def factory_receipt(
         receipt_date=receipt_date,
         receipt_amount=receipt_amount
     )
+
+
+def factory_refund(
+        routing_slip_id: int,
+        details={}
+):
+    """Return Factory."""
+    return Refund(
+        routing_slip_id=routing_slip_id,
+        requested_date=datetime.now(),
+        reason='TEST',
+        requested_by='TEST',
+        details=details
+    ).save()

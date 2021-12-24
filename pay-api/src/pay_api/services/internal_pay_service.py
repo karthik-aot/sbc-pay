@@ -18,21 +18,17 @@ There are conditions where the payment will be handled internally. For e.g, zero
 import decimal
 from datetime import datetime
 from http import HTTPStatus
-from typing import List
 
 from flask import current_app
 
-from pay_api.models import CfsAccount as CfsAccountModel
 from pay_api.models import Invoice as InvoiceModel
 from pay_api.models import Payment as PaymentModel
-from pay_api.models import PaymentLineItem as PaymentLineItemModel
 from pay_api.models import RoutingSlip as RoutingSlipModel
 from pay_api.services.base_payment_system import PaymentSystemService
-from pay_api.services.cfs_service import CFSService
 from pay_api.services.invoice import Invoice
 from pay_api.services.invoice_reference import InvoiceReference
 from pay_api.services.payment_account import PaymentAccount
-from pay_api.utils.enums import PaymentMethod, PaymentStatus, PaymentSystem, RoutingSlipStatus
+from pay_api.utils.enums import InvoiceStatus, PaymentMethod, PaymentStatus, PaymentSystem, RoutingSlipStatus
 from pay_api.utils.util import generate_transaction_number
 
 from ..exceptions import BusinessException
@@ -54,33 +50,19 @@ class InternalPayService(PaymentSystemService, OAuthService):
         current_app.logger.debug('<create_invoice')
         routing_slip = None
         is_zero_dollar_invoice = invoice.total == 0
+        invoice_reference: InvoiceReference = None
         if routing_slip_number := invoice.routing_slip:
             routing_slip = RoutingSlipModel.find_by_number(routing_slip_number)
             InternalPayService._validate_routing_slip(routing_slip, invoice)
         if not is_zero_dollar_invoice and routing_slip is not None:
-            line_item_models: List[PaymentLineItemModel] = []
-            for line_item in line_items:
-                line_item_models.append(PaymentLineItemModel.find_by_id(line_item.id))
-
-            routing_slip_payment_account: PaymentAccount = PaymentAccount.find_by_id(
-                routing_slip.payment_account_id)
-
-            cfs_account: CfsAccountModel = CfsAccountModel.find_effective_by_account_id(
-                routing_slip_payment_account.id)
-            invoice_response = CFSService.create_account_invoice(invoice.id, line_item_models, cfs_account)
-
-            invoice_reference: InvoiceReference = InvoiceReference.create(
-                invoice.id, invoice_response.json().get('invoice_number', None),
-                # TODO is pbc_ref_number correct?
-                invoice_response.json().get('pbc_ref_number', None))
-
-            current_app.logger.debug('>create_invoice')
-
+            # creating invoice in cfs is done in job
             routing_slip.remaining_amount = routing_slip.remaining_amount - decimal.Decimal(invoice.total)
             routing_slip.flush()
         else:
-            invoice_reference: InvoiceReference = InvoiceReference.create(invoice.id,
-                                                                          generate_transaction_number(invoice.id), None)
+            invoice_reference = InvoiceReference.create(invoice.id,
+                                                        generate_transaction_number(invoice.id), None)
+            invoice.invoice_status_code = InvoiceStatus.CREATED.value
+            invoice.save()
 
         current_app.logger.debug('>create_invoice')
         return invoice_reference
@@ -97,27 +79,14 @@ class InternalPayService(PaymentSystemService, OAuthService):
 
     def complete_post_invoice(self, invoice: Invoice, invoice_reference: InvoiceReference) -> None:
         """Complete any post invoice activities if needed."""
-        # pylint: disable=import-outside-toplevel, cyclic-import
-        from .payment import Payment
-        from .payment_transaction import PaymentTransaction
+        if invoice.invoice_status_code != InvoiceStatus.APPROVED.value:
+            self.complete_payment(invoice, invoice_reference)
+            # Publish message to the queue with payment token, so that they can release records on their side.
+        self._release_payment(invoice=invoice)
 
-        # Create a payment record
-        current_app.logger.debug('Created payment record')
-        Payment.create(payment_method=self.get_payment_method_code(),
-                       payment_system=self.get_payment_system_code(),
-                       payment_status=self.get_default_payment_status(),
-                       invoice_number=invoice_reference.invoice_number,
-                       invoice_amount=invoice.total,
-                       payment_account_id=invoice.payment_account_id)
-
-        transaction: PaymentTransaction = PaymentTransaction.create_transaction_for_invoice(
-            invoice.id,
-            {
-                'clientSystemUrl': '',
-                'payReturnUrl': ''
-            }
-        )
-        transaction.update_transaction(transaction.id, pay_response_url=None)
+    def get_default_invoice_status(self) -> str:  # pylint: disable=no-self-use
+        """Return the default status for invoice when created."""
+        return InvoiceStatus.APPROVED.value
 
     def process_cfs_refund(self, invoice: InvoiceModel):
         """Process refund in CFS."""
@@ -131,14 +100,19 @@ class InternalPayService(PaymentSystemService, OAuthService):
 
         if (routing_slip_number := invoice.routing_slip) is None:
             raise BusinessException(Error.INVALID_REQUEST)
-        # TODO Add cfs refund here
+        if invoice.total == 0:
+            raise BusinessException(Error.NO_FEE_REFUND)
+        if not (routing_slip := RoutingSlipModel.find_by_number(routing_slip_number)):
+            raise BusinessException(Error.ROUTING_SLIP_REFUND)
+
         payment: PaymentModel = PaymentModel.find_payment_for_invoice(invoice.id)
-        payment.payment_status_code = PaymentStatus.REFUNDED.value
-        payment.flush()
-        # if not legacy routing slip , add the total back to routing slip
-        if routing_slip := RoutingSlipModel.find_by_number(routing_slip_number):
-            routing_slip.remaining_amount += decimal.Decimal(invoice.total)
-            routing_slip.flush()
+        if payment:
+            payment.payment_status_code = PaymentStatus.REFUNDED.value
+            payment.flush()
+        routing_slip.remaining_amount += decimal.Decimal(invoice.total)
+        routing_slip.flush()
+        invoice.invoice_status_code = InvoiceStatus.REFUND_REQUESTED.value
+        invoice.flush()
 
     @staticmethod
     def _validate_routing_slip(routing_slip: RoutingSlipModel, invoice: Invoice):
@@ -150,10 +124,13 @@ class InternalPayService(PaymentSystemService, OAuthService):
             # legacy routing slip which doesnt exist in the system.No validations
             return
 
-        # check rs is active
+        # check rs is nsf
+        if routing_slip.status == RoutingSlipStatus.NSF.value and routing_slip.remaining_amount <= 0:
+            raise BusinessException(Error.RS_INSUFFICIENT_FUNDS)
 
+        # check rs is active
         if routing_slip.status not in (
-                RoutingSlipStatus.ACTIVE.value, RoutingSlipStatus.LINKED.value):
+                RoutingSlipStatus.ACTIVE.value, RoutingSlipStatus.LINKED.value, RoutingSlipStatus.NSF.value):
             raise BusinessException(Error.RS_NOT_ACTIVE)
 
         if routing_slip.parent:

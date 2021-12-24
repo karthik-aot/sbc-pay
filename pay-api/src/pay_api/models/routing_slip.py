@@ -50,6 +50,7 @@ class RoutingSlip(Audit):  # pylint: disable=too-many-instance-attributes
     remaining_amount = db.Column(db.Numeric(), nullable=True, default=0)
     routing_slip_date = db.Column(db.Date, nullable=False)
     parent_number = db.Column(db.String(), ForeignKey('routing_slips.number'), nullable=True)
+    refund_amount = db.Column(db.Numeric(), nullable=True, default=0)
 
     payment_account = relationship(PaymentAccount, foreign_keys=[payment_account_id], lazy='select', innerjoin=True)
     payments = relationship(Payment,
@@ -85,6 +86,16 @@ class RoutingSlip(Audit):  # pylint: disable=too-many-instance-attributes
     def find_children(cls, number: str) -> List[RoutingSlip]:
         """Return children for the routing slip."""
         return cls.query.filter_by(parent_number=number).all()
+
+    @classmethod
+    def find_by_payment_account_id(cls, payment_account_id: str) -> RoutingSlip:
+        """Return a routing slip by payment account number."""
+        return cls.query.filter_by(payment_account_id=payment_account_id).one_or_none()
+
+    @classmethod
+    def find_all_by_payment_account_id(cls, payment_account_id: str) -> List[RoutingSlip]:
+        """Return a routing slip by payment account number."""
+        return cls.query.filter_by(payment_account_id=payment_account_id).all()
 
     @classmethod
     def search(cls, search_filter: Dict,  # pylint: disable=too-many-arguments

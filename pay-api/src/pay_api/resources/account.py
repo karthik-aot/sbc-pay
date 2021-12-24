@@ -15,7 +15,7 @@
 from datetime import datetime
 from http import HTTPStatus
 
-from flask import Response, current_app, jsonify, request
+from flask import Response, abort, current_app, jsonify, request
 from flask_restx import Namespace, Resource, cors
 
 from pay_api.exceptions import BusinessException, ServiceUnavailableException, error_to_response
@@ -29,7 +29,6 @@ from pay_api.utils.enums import CfsAccountStatus, ContentType, Role
 from pay_api.utils.errors import Error
 from pay_api.utils.trace import tracing as _tracing
 from pay_api.utils.util import cors_preflight
-
 
 API = Namespace('accounts', description='Payment System - Accounts')
 
@@ -48,13 +47,19 @@ class Accounts(Resource):
         current_app.logger.info('<Account.post')
         request_json = request.get_json()
         current_app.logger.debug(request_json)
+
+        # Check if sandbox request is authorized.
+        is_sandbox = request.args.get('sandbox', 'false').lower() == 'true'
+        if is_sandbox and not _jwt.validate_roles([Role.CREATE_SANDBOX_ACCOUNT.value]):
+            abort(HTTPStatus.FORBIDDEN)
+
         # Validate the input request
         valid_format, errors = schema_utils.validate(request_json, 'account_info')
 
         if not valid_format:
             return error_to_response(Error.INVALID_REQUEST, invalid_params=schema_utils.serialize(errors))
         try:
-            response = PaymentAccountService.create(request_json)
+            response = PaymentAccountService.create(request_json, is_sandbox)
             status = HTTPStatus.ACCEPTED \
                 if response.cfs_account_id and response.cfs_account_status == CfsAccountStatus.PENDING.value \
                 else HTTPStatus.CREATED
@@ -127,8 +132,8 @@ class Account(Resource):
         return jsonify({}), HTTPStatus.NO_CONTENT
 
 
-@cors_preflight('POST')
-@API.route('/<string:account_number>/fees', methods=['POST', 'OPTIONS'])
+@cors_preflight('POST,GET')
+@API.route('/<string:account_number>/fees', methods=['POST', 'GET', 'OPTIONS'])
 class AccountFees(Resource):
     """Endpoint resource to create payment account fee settings."""
 
@@ -150,6 +155,17 @@ class AccountFees(Resource):
         except BusinessException as exception:
             return exception.response()
         current_app.logger.debug('>AccountFees.post')
+        return jsonify(response), status
+
+    @staticmethod
+    @cors.crossdomain(origin='*')
+    @_jwt.requires_auth
+    @_jwt.has_one_of_roles([Role.MANAGE_ACCOUNTS.value])
+    def get(account_number: str):
+        """Get Fee details for the account."""
+        current_app.logger.info('<AccountFees.get')
+        response, status = PaymentAccountService.get_account_fees(account_number), HTTPStatus.OK
+        current_app.logger.debug('>AccountFees.get')
         return jsonify(response), status
 
 

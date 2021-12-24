@@ -20,17 +20,21 @@ Test-Suite to ensure that the /accounts endpoint is working as expected.
 import json
 from unittest.mock import patch
 
+import pytest
 from requests.exceptions import ConnectionError
+from faker import Faker
 
 from pay_api.exceptions import ServiceUnavailableException
 from pay_api.models.invoice import Invoice
 from pay_api.models.payment_account import PaymentAccount
 from pay_api.schemas import utils as schema_utils
-from pay_api.utils.enums import PaymentMethod, Role
+from pay_api.utils.enums import CfsAccountStatus, PaymentMethod, Role
 from tests.utilities.base_test import (
     get_basic_account_payload, get_claims, get_gov_account_payload, get_gov_account_payload_with_no_revenue_account,
     get_pad_account_payload, get_payment_request, get_premium_account_payload, get_unlinked_pad_account_payload,
     token_header)
+
+fake = Faker()
 
 
 def test_account_purchase_history(session, client, jwt, app):
@@ -402,6 +406,21 @@ def test_update_online_banking_account_when_cfs_up(session, client, jwt, app):
     assert rv.status_code == 202
 
 
+def test_update_name(session, client, jwt, app):
+    """Assert that the payment records are created with 200."""
+    token = jwt.create_jwt(get_claims(role=Role.SYSTEM.value), token_header)
+    headers = {'Authorization': f'Bearer {token}', 'content-type': 'application/json'}
+    rv = client.post('/api/v1/accounts',
+                     data=json.dumps(get_basic_account_payload(payment_method=PaymentMethod.ONLINE_BANKING.value)),
+                     headers=headers)
+    auth_account_id = rv.json.get('accountId')
+    rv = client.put(f'/api/v1/accounts/{auth_account_id}',
+                    data=json.dumps({'accountName': fake.name()}),
+                    headers=headers)
+
+    assert rv.status_code == 202
+
+
 def test_account_get_by_system(session, client, jwt, app):
     """Assert that the endpoint returns 200."""
     token = jwt.create_jwt(get_claims(roles=[Role.SYSTEM.value]), token_header)
@@ -471,6 +490,13 @@ def test_create_gov_accounts_with_account_fee(session, client, jwt, app):
     ]}), headers=headers)
 
     assert rv.status_code == 200
+    assert rv.json.get('accountFees')[0]['product'] == 'BUSINESS'
+    assert not rv.json.get('accountFees')[0]['applyFilingFees']
+    assert rv.json.get('accountFees')[0]['serviceFeeCode'] == 'TRF01'
+
+    headers = {'Authorization': f'Bearer {token}', 'content-type': 'application/json'}
+    rv = client.get(f'/api/v1/accounts/{account_id}/fees', headers=headers)
+
     assert rv.json.get('accountFees')[0]['product'] == 'BUSINESS'
     assert not rv.json.get('accountFees')[0]['applyFilingFees']
     assert rv.json.get('accountFees')[0]['serviceFeeCode'] == 'TRF01'
@@ -549,3 +575,21 @@ def test_account_delete(session, client, jwt, app):
 
     rv = client.delete(f'/api/v1/accounts/{auth_account_id}', headers=headers)
     assert rv.status_code == 204
+
+
+@pytest.mark.parametrize('pay_load, is_cfs_account_expected, expected_response_status, roles', [
+    (get_unlinked_pad_account_payload(), True, 201, [Role.SYSTEM.value, Role.CREATE_SANDBOX_ACCOUNT.value]),
+    (get_premium_account_payload(), False, 201, [Role.SYSTEM.value, Role.CREATE_SANDBOX_ACCOUNT.value]),
+    (get_premium_account_payload(), False, 403, [Role.SYSTEM.value])
+])
+def test_create_sandbox_accounts(session, client, jwt, app, pay_load, is_cfs_account_expected, expected_response_status,
+                                 roles):
+    """Assert that the payment records are created with 202."""
+    token = jwt.create_jwt(get_claims(roles=roles), token_header)
+    headers = {'Authorization': f'Bearer {token}', 'content-type': 'application/json'}
+    rv = client.post('/api/v1/accounts?sandbox=true', data=json.dumps(pay_load),
+                     headers=headers)
+
+    assert rv.status_code == expected_response_status
+    if is_cfs_account_expected:
+        assert rv.json['cfsAccount']['status'] == CfsAccountStatus.ACTIVE.value
